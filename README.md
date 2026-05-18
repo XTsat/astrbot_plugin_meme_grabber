@@ -16,8 +16,7 @@
 
 ## 安装方法
 
-1. 下载最新 [Release](https://github.com/Yangyuwuhan/astrbot_plugin_meme_grabber/releases) 并解压，将插件目录 `astrbot_plugin_meme_grabber` 复制到 AstrBot 的 `data/plugins` 目录下
-2. 重启 AstrBot 以加载插件
+下载zip压缩包，在astrbot插件配置中选择从文件安装
 
 ## 使用说明
 
@@ -39,21 +38,3 @@
 
 1. 该插件仅支持 QQ 平台（aiocqhttp）
 2. 默认提取扩展名指当插件无法识别表情包格式时，输出提取文件所使用的扩展名。若扩展名错误，下载下来把扩展名改成实际即可。
-
-## 声明
-
-1. 本插件的最初构想来源于 [orchidsziyou](https://github.com/orchidsziyou) 的 [astrbot_plugins_ConvetPicture](https://github.com/orchidsziyou/astrbot_plugins_ConvetPicture) 插件，Yangyuwuhan 将整个插件进行了重构和升级
-2. 本插件使用了AI，但作者已对其进行了严格的审查和测试
-3. 本插件使用 AGPL License
-
-
-## 提出问题
-
-1. 直接提交 issue
-2. 添加 QQ群: 1083269367 进行反馈，注意入群后及时完成人机验证
-
-## 相关链接
-
-- [astrbot_plugins_ConvetPicture](https://github.com/orchidsziyou/astrbot_plugins_ConvetPicture)
-- [astrbot_plugin_meme_grabber](https://github.com/Yangyuwuhan/astrbot_plugin_meme_grabber)
-- [AstrBot](https://astrbot.app)
