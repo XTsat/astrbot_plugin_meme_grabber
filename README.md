@@ -32,7 +32,25 @@
 | temp_dir          | 临时文件保存目录       | data/plugin_data/astrbot_plugin_meme_grabber |
 | delete_after_send | 发送后删除临时文件     | true                                         |
 | default_extension | 默认提取扩展名         | jpg                                          |
-| download_timeout  | 表情包下载超时时间（秒） | 60                                           |
+| download_timeout  | 表情包下载超时时间（秒） | 60                                          |
+| send_method       | 发送方式（仅静态图片） | image                                        |
+| filename_pattern  | 自定义文件命名规则     | meme_{DATE}_{TIMESTAMP}_{UUID}               |
+
+## 文件命名规则
+
+支持以下占位符，可自由拼接字符串：
+
+| 占位符 | 说明 | 示例输出 |
+|--------|------|----------|
+| `{DATE}` | 日期 | `20260630` |
+| `{TIME}` | 时间 | `143005` |
+| `{TIMESTAMP}` | 毫秒时间戳 | `1719734400000` |
+| `{UUID}` | 8位随机ID | `a1b2c3d4` |
+| `{DATETIME:格式}` | 自定义日期时间 | `{DATETIME:%Y%m%d_%H%M%S}` → `20260630_143005` |
+
+命名示例：
+- `{DATETIME:%Y%m%d_%H%M%S}_{UUID}` → `20260630_143005_a1b2c3d4.gif`
+- `表情_{DATE}` → `表情_20260630.jpg`
 
 ## ⚠ 注意事项
 

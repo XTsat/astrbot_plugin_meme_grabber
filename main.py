@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import ipaddress
 import os
+import re
 import shutil
 import time
 import urllib.parse
@@ -48,6 +49,8 @@ class MemeGrabberPlugin(Star):
         self.download_timeout = self.config.get("download_timeout", 60)
         # 获取发送方式: file(群文件方式) / image(图片方式)
         self.send_method = self.config.get("send_method", "image")
+        # 获取自定义文件命名规则
+        self.filename_pattern = self.config.get("filename_pattern", "meme_{date}_{timestamp}")
         # 延迟初始化 aiohttp ClientSession，首次使用时创建
         self.session = None
         # 用于保护 session 初始化的锁
@@ -190,10 +193,19 @@ class MemeGrabberPlugin(Star):
         Returns:
             str: 生成的文件名
         """
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        now = datetime.datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H-%M-%S")
         timestamp = int(time.time() * 1000)
         unique_id = uuid.uuid4().hex[:8]
-        return f"meme_{date_str}_{timestamp}_{unique_id}{ext}"
+
+        result = self.filename_pattern
+        result = re.sub(r"\{datetime:([^}]+)\}", lambda m: now.strftime(m.group(1)), result)
+        result = result.replace("{date}", date_str)
+        result = result.replace("{time}", time_str)
+        result = result.replace("{timestamp}", str(timestamp))
+        result = result.replace("{uuid}", unique_id)
+        return result + ext
 
     # 动图格式扩展名，图片模式下自动降级为文件方式发送以保留动画
     _ANIMATED_EXTENSIONS = {".gif", ".apng", ".webp"}

@@ -28,6 +28,12 @@
         "hint": "选择发送静态表情包的方式，动图将以群文件方式发送保留动画",
         "options": ["file", "image"],
         "labels": ["群文件方式", "图片方式"]
+    },
+    "filename_pattern": {
+        "description": "自定义文件命名规则",
+        "type": "string",
+        "default": "meme_{date}_{timestamp}",
+        "hint": "可用规则: {date}日期, {time}时间, {timestamp}时间戳, {uuid}随机ID, {datetime:自定义日期格式}可用：%Y %m %d %H %M %S，扩展名自动追加"
     }
 }
 
