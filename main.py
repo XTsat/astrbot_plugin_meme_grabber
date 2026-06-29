@@ -246,145 +246,60 @@ class MemeGrabberPlugin(Star):
             event.stop_event()
             event.should_call_llm(False)
 
-    async def _process_image_component(self, img_component: Image):
+    async def _process_image(self, picture_url=None, local_path=None):
         """
-        使用框架标准方法处理 Image 组件，转换为可发送的文件
+        统一处理图片，转换为可发送的文件。picture_url 优先于 local_path。
 
         Args:
-            img_component: Image 组件
+            picture_url: 图片URL（优先使用）
+            local_path: 本地文件路径
 
         Returns:
             tuple: (文件路径, 文件名, 是否为临时文件)
         """
         try:
-            picture_url = img_component.url or img_component.file or ""
-
-            if picture_url and "/club/item/" in picture_url:
-                logger.info(f"处理官方表情: {picture_url}")
+            if picture_url:
+                # 下载URL图片
                 parsed_url = urllib.parse.urlparse(picture_url)
                 path = parsed_url.path
-                ext = os.path.splitext(path)[1].lower()
-                if not ext:
-                    ext = f".{self.default_extension}"
+                file_ext = os.path.splitext(path)[1].lower()
+                if not file_ext:
+                    file_ext = f".{self.default_extension}"
 
-                filename = self._generate_filename(ext)
+                filename = self._generate_filename(file_ext)
                 relative_path = os.path.join(self.data_dir, filename)
 
-                result = await self.download_image(picture_url, relative_path)
-                if result:
-                    absolute_path = os.path.abspath(relative_path)
-                    return absolute_path, filename, True
-                else:
-                    logger.error("下载官方表情失败")
-                    return None, None, False
-
-            file_path = await img_component.convert_to_file_path()
-            if not file_path:
-                logger.error("Image.convert_to_file_path 返回空路径")
+                success = await self.download_image(picture_url, relative_path)
+                if success:
+                    return os.path.abspath(relative_path), filename, True
+                logger.error(f"下载图片失败: {picture_url}")
                 return None, None, False
 
-            file_extension = f".{self.default_extension}"
-            try:
-                kind = filetype.guess(file_path)
-                if kind and kind.extension:
-                    file_extension = f".{kind.extension}"
-            except Exception as e:
-                logger.exception(f"使用filetype判断图片类型失败: {str(e)}")
-
-            filename = self._generate_filename(file_extension)
-            temp_path = os.path.join(self.data_dir, filename)
-
-            try:
-                shutil.copy2(file_path, temp_path)
-                abs_path = os.path.abspath(temp_path)
-                logger.info(f"已获取: {filename}")
-                return abs_path, filename, True
-            except Exception as e:
-                logger.exception(f"复制图片到临时目录失败: {str(e)}")
-                abs_path = os.path.abspath(file_path)
-                return abs_path, filename, False
-        except Exception as e:
-            logger.exception(f"处理 Image 组件时发生错误: {str(e)}")
-            return None, None, False
-
-    async def _process_image_to_file(self, event: AiocqhttpMessageEvent, img_msg: dict):
-        """
-        处理图片消息字典并转换为可发送的文件
-        Args:
-            event: 消息事件
-            img_msg: 图片消息字典
-
-        Returns:
-            tuple: (文件路径, 文件名, 是否为临时文件)
-        """
-        try:
-            picture_url = img_msg.get("data", {}).get("url")
-            file_id = img_msg.get("data", {}).get("file")
-
-            if picture_url and "/club/item/" in picture_url:
-                logger.info(f"处理官方表情: {picture_url}")
-                parsed_url = urllib.parse.urlparse(picture_url)
-                path = parsed_url.path
-                ext = os.path.splitext(path)[1].lower()
-                if not ext:
-                    ext = f".{self.default_extension}"
-
-                filename = self._generate_filename(ext)
-                relative_path = os.path.join(self.data_dir, filename)
-
-                result = await self.download_image(picture_url, relative_path)
-                if result:
-                    absolute_path = os.path.abspath(relative_path)
-                    return absolute_path, filename, True
-            elif picture_url:
-                logger.info(f"处理带URL的图片: {picture_url}")
-                parsed_url = urllib.parse.urlparse(picture_url)
-                path = parsed_url.path
-                ext = os.path.splitext(path)[1].lower()
-                if not ext:
-                    ext = f".{self.default_extension}"
-
-                filename = self._generate_filename(ext)
-                relative_path = os.path.join(self.data_dir, filename)
-
-                result = await self.download_image(picture_url, relative_path)
-                if result:
-                    absolute_path = os.path.abspath(relative_path)
-                    return absolute_path, filename, True
-            elif file_id:
-                img_response = await event.bot.api.call_action(
-                    "get_image", file=file_id
-                )
-                localdiskpath = img_response.get("file")
-                if not localdiskpath:
-                    logger.error("获取图片文件路径失败")
-                    return None, None, False
-
+            if local_path:
+                # 处理本地文件
                 file_extension = f".{self.default_extension}"
                 try:
-                    kind = filetype.guess(localdiskpath)
+                    kind = filetype.guess(local_path)
                     if kind and kind.extension:
                         file_extension = f".{kind.extension}"
-                except Exception as e:
-                    logger.exception(f"使用filetype判断图片类型失败: {str(e)}")
+                except Exception:
+                    logger.exception("使用filetype判断图片类型失败")
 
                 filename = self._generate_filename(file_extension)
                 temp_path = os.path.join(self.data_dir, filename)
+
                 try:
-                    shutil.copy2(localdiskpath, temp_path)
-                    abs_path = os.path.abspath(temp_path)
-                    logger.info(f"已获取: {filename}")
-                    return abs_path, filename, True
-                except Exception as e:
-                    logger.exception(f"复制图片到临时目录失败: {str(e)}")
-                    abs_path = os.path.abspath(localdiskpath)
-                    return abs_path, filename, False
-            else:
-                logger.error("图片消息中缺少URL或file_id")
-                return None, None, False
-        except Exception as e:
-            logger.exception(f"处理图片时发生错误: {str(e)}")
-        return None, None, False
+                    shutil.copy2(local_path, temp_path)
+                    return os.path.abspath(temp_path), filename, True
+                except Exception:
+                    logger.exception("复制图片到临时目录失败")
+                    return os.path.abspath(local_path), filename, False
+
+            logger.error("图片处理缺少URL和本地路径")
+            return None, None, False
+        except Exception:
+            logger.exception("处理图片时发生错误")
+            return None, None, False
 
     async def handle_reply_message(self, event: AstrMessageEvent, reply_msg: Reply):
         """
@@ -405,15 +320,20 @@ class MemeGrabberPlugin(Star):
             temp_files = []
 
             # 优先从 reply_msg.chain 获取图片（框架已解析好的消息段）
-            logger.info(f"reply_msg.chain 类型: {type(reply_msg.chain)}, 内容: {reply_msg.chain}")
             if reply_msg.chain and isinstance(reply_msg.chain, list):
                 image_components = [
                     msg for msg in reply_msg.chain
                     if isinstance(msg, Image)
                 ]
-                logger.info(f"从 chain 中找到 Image 组件数: {len(image_components)}")
                 if image_components:
-                    tasks = [self._process_image_component(img) for img in image_components]
+                    tasks = []
+                    for img in image_components:
+                        url = img.url or img.file or ""
+                        if url and (url.startswith("http://") or url.startswith("https://")):
+                            tasks.append(self._process_image(picture_url=url))
+                        else:
+                            local_path = await img.convert_to_file_path()
+                            tasks.append(self._process_image(local_path=local_path))
                     results = await asyncio.gather(*tasks)
                     for file_path, filename, is_temp in results:
                         if file_path and filename:
@@ -426,7 +346,6 @@ class MemeGrabberPlugin(Star):
                 client = event.bot
                 response = await client.api.call_action("get_msg", message_id=reply_msg.id)
                 reply_msg_content = response.get("message", [])
-                logger.info(f"get_msg 返回消息内容: {reply_msg_content}")
                 if not reply_msg_content:
                     yield event.plain_result("引用消息格式错误")
                     event.stop_event()
@@ -436,9 +355,16 @@ class MemeGrabberPlugin(Star):
                 tasks = []
                 for msg in reply_msg_content:
                     msg_type = msg.get("type", "")
-                    logger.info(f"get_msg 消息段类型: {msg_type}, 完整数据: {msg}")
-                    if msg_type == "image" or msg_type == "mface":
-                        tasks.append(self._process_image_to_file(event, msg))
+                    if msg_type in ("image", "mface"):
+                        url = msg.get("data", {}).get("url")
+                        file_id = msg.get("data", {}).get("file")
+                        if url:
+                            tasks.append(self._process_image(picture_url=url))
+                        elif file_id:
+                            img_response = await client.api.call_action("get_image", file=file_id)
+                            tasks.append(self._process_image(local_path=img_response.get("file")))
+                        else:
+                            tasks.append(self._process_image())
 
                 results = await asyncio.gather(*tasks)
                 for file_path, filename, is_temp in results:
@@ -517,8 +443,13 @@ class MemeGrabberPlugin(Star):
 
             # 使用框架标准方法处理 Image 组件
             tasks = []
-            for img_component in found_images:
-                tasks.append(self._process_image_component(img_component))
+            for img in found_images:
+                url = img.url or img.file or ""
+                if url and (url.startswith("http://") or url.startswith("https://")):
+                    tasks.append(self._process_image(picture_url=url))
+                else:
+                    local_path = await img.convert_to_file_path()
+                    tasks.append(self._process_image(local_path=local_path))
 
             results = await asyncio.gather(*tasks)
 
