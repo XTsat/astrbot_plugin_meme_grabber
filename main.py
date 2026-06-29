@@ -232,6 +232,45 @@ class MemeGrabberPlugin(Star):
             return Comp.Image.fromFileSystem(file_path)
         return Comp.File(file=file_path, name=filename)
 
+    def _mode_name(self) -> str:
+        """返回当前名单模式的中文名称"""
+        return "黑名单" if self.list_mode == "blacklist" else "白名单"
+
+    def _cleanup_temp_files(self, temp_files: list):
+        """根据配置清理临时文件"""
+        if not self.delete_after_send:
+            return
+        for file_path in temp_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logger.info(f"已删除: {os.path.basename(file_path)}")
+            except Exception as e:
+                logger.exception(f"删除临时文件时发生错误: {str(e)}")
+
+    async def _build_image_tasks(self, image_components: list) -> list:
+        """从 Image 组件列表构建 _process_image 的异步任务列表"""
+        tasks = []
+        for img in image_components:
+            url = img.url or img.file or ""
+            if url and (url.startswith("http://") or url.startswith("https://")):
+                tasks.append(self._process_image(picture_url=url))
+            else:
+                local_path = await img.convert_to_file_path()
+                tasks.append(self._process_image(local_path=local_path))
+        return tasks
+
+    def _build_chain_from_results(self, results: list) -> tuple[list, list]:
+        """从 _process_image 结果列表构建消息链和临时文件列表"""
+        chain: list[BaseMessageComponent] = []
+        temp_files = []
+        for file_path, filename, is_temp in results:
+            if file_path and filename:
+                chain.append(self._build_send_component(file_path, filename))
+                if is_temp:
+                    temp_files.append(file_path)
+        return chain, temp_files
+
     @staticmethod
     def _parse_group_list(group_list_str: str) -> set:
         """解析群号列表字符串为集合"""
@@ -260,59 +299,6 @@ class MemeGrabberPlugin(Star):
             self.config.save()
         except Exception:
             logger.warning("自动保存配置失败，请手动在管理面板保存")
-
-    async def _process_local_image(self, event: AstrMessageEvent, localdiskpath: str):
-        """
-        处理本地图片路径，转换为可发送文件
-
-        Args:
-            event: 消息事件
-            localdiskpath: 本地图片路径
-
-        Yields:
-            处理结果
-        """
-        try:
-            temp_abs_path = os.path.abspath(localdiskpath)
-
-            # 只通过filetype库判断文件格式
-            file_extension = f".{self.default_extension}"  # 默认扩展名
-
-            try:
-                kind = filetype.guess(temp_abs_path)
-                if kind and kind.extension:
-                    file_extension = f".{kind.extension}"
-            except Exception as e:
-                logger.error(f"使用filetype判断图片类型失败: {str(e)}")
-
-            # 生成唯一的文件名
-            filename = self._generate_filename(file_extension)
-
-            # 复制图片到我们的临时目录
-            temp_path = os.path.join(self.data_dir, filename)
-
-            try:
-                shutil.copy2(localdiskpath, temp_path)
-                abs_path = os.path.abspath(temp_path)
-                logger.info(f"已获取: {filename}")
-                # 发送插件创建的文件，允许删除
-                async for result in self.send_file_to_user(
-                    event, abs_path, filename, is_plugin_created=True
-                ):
-                    yield result
-            except Exception as e:
-                logger.error(f"复制图片到临时目录失败: {str(e)}")
-                abs_path = temp_abs_path
-                # 发送原始文件，不允许删除
-                async for result in self.send_file_to_user(
-                    event, abs_path, filename, is_plugin_created=False
-                ):
-                    yield result
-        except Exception as e:
-            logger.error(f"处理本地图片时发生错误: {str(e)}")
-            yield event.plain_result(f"处理图片失败: {str(e)}")
-            event.stop_event()
-            event.should_call_llm(False)
 
     async def _process_image(self, picture_url=None, local_path=None):
         """
@@ -402,14 +388,7 @@ class MemeGrabberPlugin(Star):
                     if isinstance(msg, Image)
                 ]
                 if image_components:
-                    tasks = []
-                    for img in image_components:
-                        url = img.url or img.file or ""
-                        if url and (url.startswith("http://") or url.startswith("https://")):
-                            tasks.append(self._process_image(picture_url=url))
-                        else:
-                            local_path = await img.convert_to_file_path()
-                            tasks.append(self._process_image(local_path=local_path))
+                    tasks = await self._build_image_tasks(image_components)
                     results = await asyncio.gather(*tasks)
                     for file_path, filename, is_temp in results:
                         if file_path and filename:
@@ -465,14 +444,7 @@ class MemeGrabberPlugin(Star):
                 logger.exception(f"发送文件时发生错误: {str(e)}")
                 yield event.plain_result(f"发送文件失败: {str(e)}")
             finally:
-                if self.delete_after_send:
-                    for file_path in temp_files:
-                        try:
-                            if os.path.exists(file_path):
-                                os.remove(file_path)
-                                logger.info(f"已删除: {os.path.basename(file_path)}")
-                        except Exception as e:
-                            logger.exception(f"删除临时文件时发生错误: {str(e)}")
+                self._cleanup_temp_files(temp_files)
 
             event.stop_event()
         except Exception as e:
@@ -517,27 +489,9 @@ class MemeGrabberPlugin(Star):
 
         # 处理收集到的所有图片
         if found_images:
-            # 构建包含所有文件的消息链
-            chain: list[BaseMessageComponent] = []
-            temp_files = []
-
-            # 使用框架标准方法处理 Image 组件
-            tasks = []
-            for img in found_images:
-                url = img.url or img.file or ""
-                if url and (url.startswith("http://") or url.startswith("https://")):
-                    tasks.append(self._process_image(picture_url=url))
-                else:
-                    local_path = await img.convert_to_file_path()
-                    tasks.append(self._process_image(local_path=local_path))
-
+            tasks = await self._build_image_tasks(found_images)
             results = await asyncio.gather(*tasks)
-
-            for file_path, filename, is_temp in results:
-                if file_path and filename:
-                    chain.append(self._build_send_component(file_path, filename))
-                    if is_temp:
-                        temp_files.append(file_path)
+            chain, temp_files = self._build_chain_from_results(results)
 
             try:
                 # 发送所有文件
@@ -546,15 +500,7 @@ class MemeGrabberPlugin(Star):
                 logger.exception(f"发送文件时发生错误: {str(e)}")
                 yield event.plain_result(f"发送文件失败: {str(e)}")
             finally:
-                # 根据配置决定是否删除临时文件
-                if self.delete_after_send:
-                    for file_path in temp_files:
-                        try:
-                            if os.path.exists(file_path):
-                                os.remove(file_path)
-                                logger.info(f"已删除: {os.path.basename(file_path)}")
-                        except Exception as e:
-                            logger.exception(f"删除临时文件时发生错误: {str(e)}")
+                self._cleanup_temp_files(temp_files)
 
             event.stop_event()
             return
@@ -586,13 +532,12 @@ class MemeGrabberPlugin(Star):
             yield event.plain_result("请在群聊中使用此命令，或指定群号，如 /memes add 123456")
             return
         if target_id in self._group_ids:
-            mode_name = "黑名单" if self.list_mode == "blacklist" else "白名单"
-            yield event.plain_result(f"该群聊已在{mode_name}中")
+            mn = self._mode_name()
+            yield event.plain_result(f"该群聊已在{mn}中")
             return
         self._group_ids.add(target_id)
         self._save_group_list()
-        mode_name = "黑名单" if self.list_mode == "blacklist" else "白名单"
-        yield event.plain_result(f"已添加群 {target_id} 到{mode_name}")
+        yield event.plain_result(f"已添加群 {target_id} 到{self._mode_name()}")
 
     @memes_command_group.command("del")
     async def memes_del(self, event: AstrMessageEvent):
@@ -607,8 +552,7 @@ class MemeGrabberPlugin(Star):
             return
         self._group_ids.discard(target_id)
         self._save_group_list()
-        mode_name = "黑名单" if self.list_mode == "blacklist" else "白名单"
-        yield event.plain_result(f"已从{mode_name}中移除群 {target_id}")
+        yield event.plain_result(f"已从{self._mode_name()}中移除群 {target_id}")
 
     @memes_command_group.command("list")
     async def memes_list(self, event: AstrMessageEvent):
@@ -627,14 +571,7 @@ class MemeGrabberPlugin(Star):
     async def memes_mode(self, event: AstrMessageEvent):
         """切换群名单模式 /memes mode [blacklist|whitelist|disabled]"""
         event.should_call_llm(False)
-        message_str = event.message_str.strip()
-        # message_str 可能是 "mode w" 或 "/memes mode w"
-        raw = message_str
-        for prefix in ("/memes mode ", "mode "):
-            if prefix in raw:
-                raw = raw.split(prefix, 1)[1]
-                break
-        new_mode = raw.strip()
+        new_mode = self._parse_memes_arg(event, "mode")
 
         valid_modes = {"b": "黑名单", "w": "白名单", "d": "禁用"}
         if new_mode not in valid_modes:
