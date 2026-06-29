@@ -46,6 +46,8 @@ class MemeGrabberPlugin(Star):
         self.default_extension = self.config.get("default_extension", "jpg")
         # 获取图片下载超时时间
         self.download_timeout = self.config.get("download_timeout", 60)
+        # 获取发送方式: file(群文件方式) / image(图片方式)
+        self.send_method = self.config.get("send_method", "image")
         # 延迟初始化 aiohttp ClientSession，首次使用时创建
         self.session = None
         # 用于保护 session 初始化的锁
@@ -160,7 +162,7 @@ class MemeGrabberPlugin(Star):
         try:
             # 使用 AstrBot 官方接口发送文件
             chain: list[BaseMessageComponent] = [
-                Comp.File(file=file_path, name=filename)
+                self._build_send_component(file_path, filename)
             ]
             # 使用 yield 发送，保持生成器函数特性
             yield event.chain_result(chain)
@@ -192,6 +194,27 @@ class MemeGrabberPlugin(Star):
         timestamp = int(time.time() * 1000)
         unique_id = uuid.uuid4().hex[:8]
         return f"meme_{date_str}_{timestamp}_{unique_id}{ext}"
+
+    # 动图格式扩展名，图片模式下自动降级为文件方式发送以保留动画
+    _ANIMATED_EXTENSIONS = {".gif", ".apng", ".webp"}
+
+    def _build_send_component(self, file_path: str, filename: str) -> BaseMessageComponent:
+        """
+        根据配置的发送方式构建消息组件
+
+        Args:
+            file_path: 文件路径
+            filename: 文件名
+
+        Returns:
+            BaseMessageComponent: 文件组件或图片组件
+        """
+        if self.send_method == "image":
+            ext = os.path.splitext(filename)[1].lower()
+            if ext in self._ANIMATED_EXTENSIONS:
+                return Comp.File(file=file_path, name=filename)
+            return Comp.Image.fromFileSystem(file_path)
+        return Comp.File(file=file_path, name=filename)
 
     async def _process_local_image(self, event: AstrMessageEvent, localdiskpath: str):
         """
@@ -381,7 +404,7 @@ class MemeGrabberPlugin(Star):
 
             chain: list[BaseMessageComponent] = []
             for file_path, filename in found_images:
-                chain.append(Comp.File(file=file_path, name=filename))
+                chain.append(self._build_send_component(file_path, filename))
 
             try:
                 yield event.chain_result(chain)
@@ -455,7 +478,7 @@ class MemeGrabberPlugin(Star):
 
             for file_path, filename, is_temp in results:
                 if file_path and filename:
-                    chain.append(Comp.File(file=file_path, name=filename))
+                    chain.append(self._build_send_component(file_path, filename))
                     if is_temp:
                         temp_files.append(file_path)
 

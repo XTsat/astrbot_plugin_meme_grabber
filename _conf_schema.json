@@ -20,6 +20,14 @@
         "description": "表情包下载超时时间（秒）",
         "type": "int",
         "default": 60
+    },
+    "send_method": {
+        "description": "发送方式",
+        "type": "string",
+        "default": "image",
+        "hint": "选择发送静态表情包的方式，动图将以群文件方式发送保留动画",
+        "options": ["file", "image"],
+        "labels": ["群文件方式", "图片方式"]
     }
 }
 
