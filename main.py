@@ -246,9 +246,49 @@ class MemeGrabberPlugin(Star):
             event.stop_event()
             event.should_call_llm(False)
 
+    async def _process_image_component(self, img_component: Image):
+        """
+        使用框架标准方法处理 Image 组件，转换为可发送的文件
+
+        Args:
+            img_component: Image 组件
+
+        Returns:
+            tuple: (文件路径, 文件名, 是否为临时文件)
+        """
+        try:
+            file_path = await img_component.convert_to_file_path()
+            if not file_path:
+                logger.error("Image.convert_to_file_path 返回空路径")
+                return None, None, False
+
+            file_extension = f".{self.default_extension}"
+            try:
+                kind = filetype.guess(file_path)
+                if kind and kind.extension:
+                    file_extension = f".{kind.extension}"
+            except Exception as e:
+                logger.exception(f"使用filetype判断图片类型失败: {str(e)}")
+
+            filename = self._generate_filename(file_extension)
+            temp_path = os.path.join(self.data_dir, filename)
+
+            try:
+                shutil.copy2(file_path, temp_path)
+                abs_path = os.path.abspath(temp_path)
+                logger.info(f"已获取: {filename}")
+                return abs_path, filename, True
+            except Exception as e:
+                logger.exception(f"复制图片到临时目录失败: {str(e)}")
+                abs_path = os.path.abspath(file_path)
+                return abs_path, filename, False
+        except Exception as e:
+            logger.exception(f"处理 Image 组件时发生错误: {str(e)}")
+            return None, None, False
+
     async def _process_image_to_file(self, event: AiocqhttpMessageEvent, img_msg: dict):
         """
-        处理图片消息并转换为可发送的文件
+        处理图片消息字典并转换为可发送的文件
         Args:
             event: 消息事件
             img_msg: 图片消息字典
@@ -257,21 +297,17 @@ class MemeGrabberPlugin(Star):
             tuple: (文件路径, 文件名, 是否为临时文件)
         """
         try:
-            # 提取图片信息
             picture_url = img_msg.get("data", {}).get("url")
             file_id = img_msg.get("data", {}).get("file")
 
-            # 处理官方表情（有URL）
             if picture_url and "/club/item/" in picture_url:
                 logger.info(f"处理图片: {picture_url}")
-                # 提取图片URL的扩展名，保持原格式
                 parsed_url = urllib.parse.urlparse(picture_url)
                 path = parsed_url.path
                 ext = os.path.splitext(path)[1].lower()
                 if not ext:
-                    ext = f".{self.default_extension}"  # 默认格式
+                    ext = f".{self.default_extension}"
 
-                # 生成唯一的文件名和保存路径
                 filename = self._generate_filename(ext)
                 relative_path = os.path.join(self.data_dir, filename)
 
@@ -279,18 +315,16 @@ class MemeGrabberPlugin(Star):
                 if result:
                     absolute_path = os.path.abspath(relative_path)
                     return absolute_path, filename, True
-            # 处理普通图片（有file_id）
             elif file_id:
                 img_response = await event.bot.api.call_action(
-                    "get_image", file_id=file_id
+                    "get_image", file=file_id
                 )
                 localdiskpath = img_response.get("file")
                 if not localdiskpath:
                     logger.error("获取图片文件路径失败")
                     return None, None, False
 
-                # 只通过filetype库判断文件格式
-                file_extension = f".{self.default_extension}"  # 默认扩展名
+                file_extension = f".{self.default_extension}"
                 try:
                     kind = filetype.guess(localdiskpath)
                     if kind and kind.extension:
@@ -298,10 +332,7 @@ class MemeGrabberPlugin(Star):
                 except Exception as e:
                     logger.exception(f"使用filetype判断图片类型失败: {str(e)}")
 
-                # 生成唯一的文件名
                 filename = self._generate_filename(file_extension)
-
-                # 复制图片到我们的临时目录
                 temp_path = os.path.join(self.data_dir, filename)
                 try:
                     shutil.copy2(localdiskpath, temp_path)
@@ -310,7 +341,6 @@ class MemeGrabberPlugin(Star):
                     return abs_path, filename, True
                 except Exception as e:
                     logger.exception(f"复制图片到临时目录失败: {str(e)}")
-                    # 如果复制失败，使用原始路径
                     abs_path = os.path.abspath(localdiskpath)
                     return abs_path, filename, False
             else:
@@ -335,68 +365,73 @@ class MemeGrabberPlugin(Star):
                 event.should_call_llm(False)
                 return
 
-            client = event.bot
-
-            # 获取回复的原始消息
-            response = await client.api.call_action("get_msg", message_id=reply_msg.id)
-            reply_msg_content = response.get("message", [])
-            if not reply_msg_content:
-                yield event.plain_result("引用消息格式错误")
-                event.stop_event()
-                event.should_call_llm(False)
-                return
-
             found_images = []
             temp_files = []
 
-            # 并发处理图片
-            tasks = []
-            for msg in reply_msg_content:
-                if msg.get("type") == "image":
-                    tasks.append(self._process_image_to_file(event, msg))
+            # 优先从 reply_msg.chain 获取图片（框架已解析好的消息段）
+            if reply_msg.chain and isinstance(reply_msg.chain, list):
+                image_components = [
+                    msg for msg in reply_msg.chain
+                    if isinstance(msg, Image)
+                ]
+                if image_components:
+                    tasks = [self._process_image_component(img) for img in image_components]
+                    results = await asyncio.gather(*tasks)
+                    for file_path, filename, is_temp in results:
+                        if file_path and filename:
+                            found_images.append((file_path, filename))
+                            if is_temp:
+                                temp_files.append(file_path)
 
-            results = await asyncio.gather(*tasks)
+            # 如果 chain 中没有找到图片，回退到 get_msg API
+            if not found_images:
+                client = event.bot
+                response = await client.api.call_action("get_msg", message_id=reply_msg.id)
+                reply_msg_content = response.get("message", [])
+                if not reply_msg_content:
+                    yield event.plain_result("引用消息格式错误")
+                    event.stop_event()
+                    event.should_call_llm(False)
+                    return
 
-            for file_path, filename, is_temp in results:
-                if file_path and filename:
-                    found_images.append((file_path, filename))
-                    if is_temp:
-                        temp_files.append(file_path)
+                tasks = []
+                for msg in reply_msg_content:
+                    if msg.get("type") == "image":
+                        tasks.append(self._process_image_to_file(event, msg))
 
-            # 回复消息中未找到图片
+                results = await asyncio.gather(*tasks)
+                for file_path, filename, is_temp in results:
+                    if file_path and filename:
+                        found_images.append((file_path, filename))
+                        if is_temp:
+                            temp_files.append(file_path)
+
             if not found_images:
                 yield event.plain_result("引用消息中未找到图片")
                 event.stop_event()
                 event.should_call_llm(False)
                 return
 
-            # 处理找到的所有图片
-            if found_images:
-                # 构建包含所有文件的消息链
-                chain: list[BaseMessageComponent] = []
-                for file_path, filename in found_images:
-                    chain.append(Comp.File(file=file_path, name=filename))
+            chain: list[BaseMessageComponent] = []
+            for file_path, filename in found_images:
+                chain.append(Comp.File(file=file_path, name=filename))
 
-                try:
-                    # 发送所有文件
-                    yield event.chain_result(chain)
-                except Exception as e:
-                    logger.exception(f"发送文件时发生错误: {str(e)}")
-                    yield event.plain_result(f"发送文件失败: {str(e)}")
-                finally:
-                    # 根据配置决定是否删除临时文件
-                    if self.delete_after_send:
-                        for file_path in temp_files:
-                            try:
-                                if os.path.exists(file_path):
-                                    os.remove(file_path)
-                                    logger.info(
-                                        f"已删除: {os.path.basename(file_path)}"
-                                    )
-                            except Exception as e:
-                                logger.exception(f"删除临时文件时发生错误: {str(e)}")
+            try:
+                yield event.chain_result(chain)
+            except Exception as e:
+                logger.exception(f"发送文件时发生错误: {str(e)}")
+                yield event.plain_result(f"发送文件失败: {str(e)}")
+            finally:
+                if self.delete_after_send:
+                    for file_path in temp_files:
+                        try:
+                            if os.path.exists(file_path):
+                                os.remove(file_path)
+                                logger.info(f"已删除: {os.path.basename(file_path)}")
+                        except Exception as e:
+                            logger.exception(f"删除临时文件时发生错误: {str(e)}")
 
-                event.stop_event()
+            event.stop_event()
         except Exception as e:
             logger.exception(f"处理回复消息时发生错误: {str(e)}")
             yield event.plain_result(f"处理回复失败: {str(e)}")
@@ -439,19 +474,10 @@ class MemeGrabberPlugin(Star):
             chain: list[BaseMessageComponent] = []
             temp_files = []
 
-            # 确保是AiocqhttpMessageEvent类型
-            if not isinstance(event, AiocqhttpMessageEvent):
-                yield event.plain_result("抱歉，该功能仅支持 QQ 平台")
-                event.stop_event()
-                event.should_call_llm(False)
-                return
-
-            # 并发处理图片
+            # 使用框架标准方法处理 Image 组件
             tasks = []
-            for img_msg in found_images:
-                # 构建与_process_image_to_file兼容的消息字典
-                img_dict = {"type": "image", "data": {"file": img_msg.file, "url": ""}}
-                tasks.append(self._process_image_to_file(event, img_dict))
+            for img_component in found_images:
+                tasks.append(self._process_image_component(img_component))
 
             results = await asyncio.gather(*tasks)
 
