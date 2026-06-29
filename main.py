@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -51,6 +52,9 @@ class MemeGrabberPlugin(Star):
         self.send_method = self.config.get("send_method", "image")
         # 获取自定义文件命名规则
         self.filename_pattern = self.config.get("filename_pattern", "meme_{date}_{timestamp}")
+        # 群名单配置
+        self.list_mode = self.config.get("list_mode", "blacklist")
+        self._group_ids = self._parse_group_list(self.config.get("group_list", ""))
         # 延迟初始化 aiohttp ClientSession，首次使用时创建
         self.session = None
         # 用于保护 session 初始化的锁
@@ -228,6 +232,35 @@ class MemeGrabberPlugin(Star):
             return Comp.Image.fromFileSystem(file_path)
         return Comp.File(file=file_path, name=filename)
 
+    @staticmethod
+    def _parse_group_list(group_list_str: str) -> set:
+        """解析群号列表字符串为集合"""
+        if not group_list_str or not group_list_str.strip():
+            return set()
+        return {line.strip() for line in group_list_str.strip().splitlines() if line.strip()}
+
+    def _check_group_allowed(self, group_id: str) -> bool:
+        """检查群聊是否允许使用功能"""
+        if self.list_mode == "disabled":
+            return True
+        if not group_id:
+            return True  # 私聊不受限制
+        in_list = group_id in self._group_ids
+        if self.list_mode == "blacklist":
+            return not in_list
+        if self.list_mode == "whitelist":
+            return in_list
+        return True
+
+    def _save_group_list(self):
+        """保存群名单到配置文件"""
+        self.config["group_list"] = "\n".join(sorted(self._group_ids))
+        # 尝试触发配置持久化
+        try:
+            self.config.save()
+        except Exception:
+            logger.warning("自动保存配置失败，请手动在管理面板保存")
+
     async def _process_local_image(self, event: AstrMessageEvent, localdiskpath: str):
         """
         处理本地图片路径，转换为可发送文件
@@ -351,6 +384,14 @@ class MemeGrabberPlugin(Star):
                 event.should_call_llm(False)
                 return
 
+            # 群名单检查
+            group_id = event.get_group_id() if event.get_group_id() else ""
+            if not self._check_group_allowed(group_id):
+                yield event.plain_result("该群聊已禁止使用此功能")
+                event.stop_event()
+                event.should_call_llm(False)
+                return
+
             found_images = []
             temp_files = []
 
@@ -440,19 +481,23 @@ class MemeGrabberPlugin(Star):
             event.stop_event()
             event.should_call_llm(False)
 
-    @filter.command("提取")
-    async def convert_command(self, event: AstrMessageEvent):
-        """
-        提取图片为可保存的文件格式
-
-        用法: 发送图片或回复包含图片的消息，然后输入 /提取 指令
-        """
+    @filter.command("meme")
+    async def meme_command(self, event: AstrMessageEvent):
+        """提取表情包为可保存的文件格式"""
         event.should_call_llm(False)
         message_chain = event.get_messages()
 
         # 检查平台是否支持
         if event.get_platform_name() != "aiocqhttp":
             yield event.plain_result("抱歉，该功能仅支持 QQ 平台")
+            event.stop_event()
+            event.should_call_llm(False)
+            return
+
+        # 群名单检查
+        group_id = event.get_group_id() if event.get_group_id() else ""
+        if not self._check_group_allowed(group_id):
+            yield event.plain_result("该群聊已禁止使用此功能")
             event.stop_event()
             event.should_call_llm(False)
             return
@@ -518,6 +563,92 @@ class MemeGrabberPlugin(Star):
         yield event.plain_result("请引用表情包或在对话中包含表情包")
         event.stop_event()
         event.should_call_llm(False)
+
+    def _parse_memes_arg(self, event: AstrMessageEvent, cmd: str) -> str:
+        """解析 memes 子命令参数（去掉指令前缀，提取群号）。无参数时返回当前群号"""
+        s = event.message_str.strip()
+        for prefix in (f"/memes {cmd} ", f"{cmd} "):
+            if prefix in s:
+                arg = s.split(prefix, 1)[1].strip()
+                return arg if arg else event.get_group_id() or ""
+        return event.get_group_id() or ""
+
+    @filter.command_group("memes")
+    async def memes_command_group(self, event: AstrMessageEvent):
+        ...
+
+    @memes_command_group.command("add")
+    async def memes_add(self, event: AstrMessageEvent):
+        """将群聊加入名单，可指定群号 /memes add 123456"""
+        event.should_call_llm(False)
+        target_id = self._parse_memes_arg(event, "add")
+        if not target_id:
+            yield event.plain_result("请在群聊中使用此命令，或指定群号，如 /memes add 123456")
+            return
+        if target_id in self._group_ids:
+            mode_name = "黑名单" if self.list_mode == "blacklist" else "白名单"
+            yield event.plain_result(f"该群聊已在{mode_name}中")
+            return
+        self._group_ids.add(target_id)
+        self._save_group_list()
+        mode_name = "黑名单" if self.list_mode == "blacklist" else "白名单"
+        yield event.plain_result(f"已添加群 {target_id} 到{mode_name}")
+
+    @memes_command_group.command("del")
+    async def memes_del(self, event: AstrMessageEvent):
+        """从名单中移除群聊，可指定群号 /memes del 123456"""
+        event.should_call_llm(False)
+        target_id = self._parse_memes_arg(event, "del")
+        if not target_id:
+            yield event.plain_result("请在群聊中使用此命令，或指定群号，如 /memes del 123456")
+            return
+        if target_id not in self._group_ids:
+            yield event.plain_result("该群聊不在名单中")
+            return
+        self._group_ids.discard(target_id)
+        self._save_group_list()
+        mode_name = "黑名单" if self.list_mode == "blacklist" else "白名单"
+        yield event.plain_result(f"已从{mode_name}中移除群 {target_id}")
+
+    @memes_command_group.command("list")
+    async def memes_list(self, event: AstrMessageEvent):
+        """查看当前名单状态和群号列表"""
+        event.should_call_llm(False)
+        mode_names = {"blacklist": "黑名单模式", "whitelist": "白名单模式", "disabled": "已禁用"}
+        mode_label = mode_names.get(self.list_mode, self.list_mode)
+        ids = sorted(self._group_ids)
+        if ids:
+            lines = "\n".join(ids)
+            yield event.plain_result(f"【{mode_label}】\n当前名单群号（{len(ids)} 个）：\n{lines}")
+        else:
+            yield event.plain_result(f"【{mode_label}】\n名单为空")
+
+    @memes_command_group.command("mode")
+    async def memes_mode(self, event: AstrMessageEvent):
+        """切换群名单模式 /memes mode [blacklist|whitelist|disabled]"""
+        event.should_call_llm(False)
+        message_str = event.message_str.strip()
+        # message_str 可能是 "mode w" 或 "/memes mode w"
+        raw = message_str
+        for prefix in ("/memes mode ", "mode "):
+            if prefix in raw:
+                raw = raw.split(prefix, 1)[1]
+                break
+        new_mode = raw.strip()
+
+        valid_modes = {"b": "黑名单", "w": "白名单", "d": "禁用"}
+        if new_mode not in valid_modes:
+            yield event.plain_result("请指定模式: b(黑名单) / w(白名单) / d(禁用)")
+            return
+
+        mode_map = {"b": "blacklist", "w": "whitelist", "d": "disabled"}
+        self.list_mode = mode_map[new_mode]
+        self.config["list_mode"] = mode_map[new_mode]
+        try:
+            self.config.save()
+        except Exception:
+            pass
+        yield event.plain_result(f"群名单模式已切换为：{valid_modes[new_mode]}")
 
     async def terminate(self):
         """插件终止时的清理操作"""

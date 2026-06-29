@@ -2,7 +2,7 @@ name: astrbot_plugin_meme_grabber
 display_name: 表情包提取
 author: XTsat
 desc: 将QQ表情包转化为可供保存的文件，支持多种格式
-version: 2.3.2
+version: 2.3.3
 repo: https://github.com/XTsat/astrbot_plugin_meme_grabber
 support_platforms:
   - aiocqhttp
