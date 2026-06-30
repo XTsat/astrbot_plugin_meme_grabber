@@ -453,7 +453,7 @@ class MemeGrabberPlugin(Star):
             event.stop_event()
             event.should_call_llm(False)
 
-    @filter.command("meme")
+    @filter.command("meme", alias=["提取"])
     async def meme_command(self, event: AstrMessageEvent):
         """提取表情包为可保存的文件格式"""
         event.should_call_llm(False)
